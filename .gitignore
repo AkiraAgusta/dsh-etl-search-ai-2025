@@ -16,7 +16,16 @@ node_modules/
 *.db
 *.log
 .env
+.env.*
+!.env.example
 
 # Downloads
 *.zip
 data/
+
+# Framework
+build/
+.svelte-kit/
+package/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
