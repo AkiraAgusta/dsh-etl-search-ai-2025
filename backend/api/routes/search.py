@@ -25,6 +25,7 @@ from api.schemas import (
     TemporalExtent,
 )
 from api.dependencies import get_db, verify_embeddings_exist
+from api.date_utils import parse_date_string
 
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -195,9 +196,11 @@ def hybrid_search(
     """
     Perform hybrid search combining semantic search with metadata filters.
     
+    Supports multiple authors, organizations, and keywords.
+    
     Steps:
     1. If query provided: semantic search to get initial candidates
-    2. Apply filters: author, organization, keywords, dates, spatial bbox
+    2. Apply filters: authors (array), organizations (array), keywords (array), dates, spatial bbox
     3. Return filtered and ranked results
     
     Args:
@@ -226,38 +229,101 @@ def hybrid_search(
     # Step 2: Build filter query
     query = db.query(DatasetModel).filter(DatasetModel.id.in_(candidate_ids))
     
-    # Apply author filter
-    if request.author:
+    # Apply authors filter (supports multiple authors)
+    if request.authors and len(request.authors) > 0:
+        # Build OR conditions for each author
+        author_conditions = []
+        for author in request.authors:
+            author_conditions.append(ContactModel.full_name.like(f"%{author}%"))
+            author_conditions.append(ContactModel.given_name.like(f"%{author}%"))
+            author_conditions.append(ContactModel.family_name.like(f"%{author}%"))
+        
         contact_ids = db.query(ContactModel.dataset_id).filter(
-            or_(
-                ContactModel.family_name.like(f"%{request.author}%"),
-                ContactModel.given_name.like(f"%{request.author}%")
-            )
-        ).all()
+            or_(*author_conditions)
+        ).distinct().all()
         author_dataset_ids = [c[0] for c in contact_ids]
-        query = query.filter(DatasetModel.id.in_(author_dataset_ids))
+        
+        if author_dataset_ids:
+            query = query.filter(DatasetModel.id.in_(author_dataset_ids))
+        else:
+            # No matching authors, return empty results
+            return SemanticSearchResponse(
+                query=request.query or "filter-only",
+                total_results=0,
+                results=[],
+                processing_time_ms=round((time.time() - start_time) * 1000, 2)
+            )
     
-    # Apply organization filter
-    if request.organization:
+    # Apply organizations filter (supports multiple organizations)
+    if request.organizations and len(request.organizations) > 0:
+        # Build OR conditions for each organization
+        org_conditions = []
+        for org in request.organizations:
+            org_conditions.append(ContactModel.organization_name.like(f"%{org}%"))
+        
         org_ids = db.query(ContactModel.dataset_id).filter(
-            ContactModel.organization_name.like(f"%{request.organization}%")
-        ).all()
-        org_dataset_ids = [c[0] for c in org_ids]
-        query = query.filter(DatasetModel.id.in_(org_dataset_ids))
+            or_(*org_conditions)
+        ).distinct().all()
+        org_dataset_ids = [o[0] for o in org_ids]
+        
+        if org_dataset_ids:
+            query = query.filter(DatasetModel.id.in_(org_dataset_ids))
+        else:
+            # No matching organizations, return empty results
+            return SemanticSearchResponse(
+                query=request.query or "filter-only",
+                total_results=0,
+                results=[],
+                processing_time_ms=round((time.time() - start_time) * 1000, 2)
+            )
     
-    # Apply keyword filter
-    if request.keywords:
-        keyword_ids = db.query(KeywordModel.dataset_id).filter(
-            KeywordModel.keyword.in_(request.keywords)
-        ).all()
-        keyword_dataset_ids = [k[0] for k in keyword_ids]
-        query = query.filter(DatasetModel.id.in_(keyword_dataset_ids))
+    # Apply keyword filter (supports multiple keywords)
+    if request.keywords and len(request.keywords) > 0:
+        # Get datasets that have ALL specified keywords (intersection)
+        keyword_dataset_ids = None
+        for keyword in request.keywords:
+            kw_ids = db.query(KeywordModel.dataset_id).filter(
+                KeywordModel.keyword == keyword
+            ).distinct().all()
+            kw_dataset_ids = set([k[0] for k in kw_ids])
+            
+            if keyword_dataset_ids is None:
+                keyword_dataset_ids = kw_dataset_ids
+            else:
+                # Intersection - dataset must have all keywords
+                keyword_dataset_ids &= kw_dataset_ids
+        
+        if keyword_dataset_ids:
+            query = query.filter(DatasetModel.id.in_(list(keyword_dataset_ids)))
+        else:
+            # No datasets with all specified keywords, return empty results
+            return SemanticSearchResponse(
+                query=request.query or "filter-only",
+                total_results=0,
+                results=[],
+                processing_time_ms=round((time.time() - start_time) * 1000, 2)
+            )
     
-    # Apply date filter
+    # Apply date filter using shared utility function
     if request.date_from:
-        query = query.filter(DatasetModel.publication_date >= request.date_from)
+        try:
+            date_from_obj = parse_date_string(request.date_from)
+            query = query.filter(DatasetModel.publication_date >= date_from_obj)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date_from format: {str(e)}"
+            )
+    
     if request.date_to:
-        query = query.filter(DatasetModel.publication_date <= request.date_to)
+        try:
+            date_to_obj = parse_date_string(request.date_to)
+            query = query.filter(DatasetModel.publication_date <= date_to_obj)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date_to format: {str(e)}"
+            )
     
     # Apply spatial filter
     if request.spatial_bbox:

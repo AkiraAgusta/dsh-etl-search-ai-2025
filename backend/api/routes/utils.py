@@ -4,7 +4,7 @@ Utility routes for health checks, statistics, and system information.
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text
+from sqlalchemy import func, text, desc, and_
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -88,7 +88,7 @@ def get_statistics(db: Session = Depends(get_db)):
     Useful for understanding the size and coverage of the database.
     
     Returns:
-        Database statistics
+        Database statistics including all authors, organizations, and keywords
     """
     # Count datasets
     total_datasets = db.query(func.count(DatasetModel.id)).scalar()
@@ -138,6 +138,110 @@ def get_statistics(db: Session = Depends(get_db)):
     
     embeddings_generated = embeddings_count > 0
     
+    # Top Authors - NO LIMIT, with explicit null/empty filtering
+    # Get authors with their full names and organizations, counting dataset appearances
+    top_authors_query = db.query(
+        # Use full_name if available, otherwise combine given and family names
+        func.coalesce(
+            ContactModel.full_name,
+            func.concat(
+                func.coalesce(ContactModel.given_name, ''),
+                ' ',
+                func.coalesce(ContactModel.family_name, '')
+            )
+        ).label('name'),
+        ContactModel.organization_name.label('organization'),
+        func.count(func.distinct(ContactModel.dataset_id)).label('count')
+    ).filter(
+        # Explicitly filter out null and empty names
+        and_(
+            # Ensure we have either full_name OR (given_name OR family_name)
+            func.coalesce(
+                ContactModel.full_name,
+                func.concat(
+                    func.coalesce(ContactModel.given_name, ''),
+                    ' ',
+                    func.coalesce(ContactModel.family_name, '')
+                )
+            ).isnot(None),
+            # Ensure the name is not just whitespace
+            func.trim(
+                func.coalesce(
+                    ContactModel.full_name,
+                    func.concat(
+                        func.coalesce(ContactModel.given_name, ''),
+                        ' ',
+                        func.coalesce(ContactModel.family_name, '')
+                    )
+                )
+            ) != ''
+        )
+    ).group_by(
+        'name', ContactModel.organization_name
+    ).order_by(
+        desc('count')
+    ).all()
+    
+    top_authors = [
+        {
+            'name': author.name.strip(),
+            'organization': author.organization,
+            'count': author.count
+        }
+        for author in top_authors_query
+        if author.name and author.name.strip()  # Additional safety check
+    ]
+    
+    # Top Organizations - NO LIMIT, with explicit null/empty filtering
+    top_organizations_query = db.query(
+        ContactModel.organization_name.label('name'),
+        func.count(func.distinct(ContactModel.dataset_id)).label('count')
+    ).filter(
+        # Explicitly filter out null and empty organizations
+        and_(
+            ContactModel.organization_name.isnot(None),
+            func.trim(ContactModel.organization_name) != ''
+        )
+    ).group_by(
+        ContactModel.organization_name
+    ).order_by(
+        desc('count')
+    ).all()
+    
+    top_organizations = [
+        {
+            'name': org.name,
+            'count': org.count
+        }
+        for org in top_organizations_query
+        if org.name and org.name.strip()  # Additional safety check
+    ]
+    
+    # Top Keywords - NO LIMIT, with explicit null/empty filtering
+    top_keywords_query = db.query(
+        KeywordModel.keyword,
+        func.count(func.distinct(KeywordModel.dataset_id)).label('count')
+    ).filter(
+        # Explicitly filter out null and empty keywords
+        and_(
+            KeywordModel.keyword.isnot(None),
+            func.trim(KeywordModel.keyword) != ''
+        )
+    ).group_by(
+        KeywordModel.keyword
+    ).order_by(
+        desc('count')
+    ).all()
+    
+    top_keywords = [
+        {
+            'keyword': keyword.keyword,
+            'count': keyword.count
+        }
+        for keyword in top_keywords_query
+        if keyword.keyword and keyword.keyword.strip()  # Additional safety check
+    ]
+    
     return DatabaseStats(
         total_datasets=total_datasets,
         total_keywords=total_keywords,
@@ -147,7 +251,10 @@ def get_statistics(db: Session = Depends(get_db)):
         metadata_formats=metadata_formats,
         embeddings_generated=embeddings_generated,
         embedding_model_name=embedding_model_name,
-        embedding_dimension=embedding_dimension
+        embedding_dimension=embedding_dimension,
+        top_authors=top_authors,
+        top_organizations=top_organizations,
+        top_keywords=top_keywords
     )
 
 

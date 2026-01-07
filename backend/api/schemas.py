@@ -159,9 +159,9 @@ class HybridSearchRequest(BaseModel):
     """Hybrid search request with filters."""
     query: Optional[str] = Field(None, max_length=500, description="Semantic search query")
     
-    # Filters
-    author: Optional[str] = Field(None, description="Author name to filter by")
-    organization: Optional[str] = Field(None, description="Organization to filter by")
+    # Arrays to support multiple selections
+    authors: Optional[List[str]] = Field(None, description="Author names to filter by")
+    organizations: Optional[List[str]] = Field(None, description="Organizations to filter by")
     keywords: Optional[List[str]] = Field(None, description="Keywords to filter by")
     date_from: Optional[str] = Field(None, description="Start date (YYYY-MM-DD)")
     date_to: Optional[str] = Field(None, description="End date (YYYY-MM-DD)")
@@ -196,6 +196,25 @@ class DatasetListResponse(BaseModel):
 
 # ==================== Statistics Schemas ====================
 
+class AuthorStat(BaseModel):
+    """Author statistics entry."""
+    name: str
+    organization: Optional[str] = None
+    count: int
+
+
+class OrganizationStat(BaseModel):
+    """Organization statistics entry."""
+    name: str
+    count: int
+
+
+class KeywordStat(BaseModel):
+    """Keyword statistics entry."""
+    keyword: str
+    count: int
+
+
 class DatabaseStats(BaseModel):
     """Database statistics."""
     model_config = ConfigDict(protected_namespaces=())
@@ -213,6 +232,11 @@ class DatabaseStats(BaseModel):
     embeddings_generated: bool
     embedding_model_name: Optional[str] = None
     embedding_dimension: Optional[int] = None
+    
+    # Top aggregations for filter dropdowns (includes ALL values)
+    top_authors: List[AuthorStat] = []
+    top_organizations: List[OrganizationStat] = []
+    top_keywords: List[KeywordStat] = []
 
 
 # ==================== Health Check Schemas ====================

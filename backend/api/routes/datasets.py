@@ -6,8 +6,8 @@ Endpoints for listing, retrieving, and filtering datasets.
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from typing import Optional
+from sqlalchemy import or_
+from typing import Optional, List
 import sys
 from pathlib import Path
 
@@ -26,6 +26,7 @@ from api.schemas import (
     TemporalExtent,
 )
 from api.dependencies import get_db, get_pagination_params
+from api.date_utils import parse_date_string
 
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
@@ -37,12 +38,20 @@ def list_datasets(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     sort_by: str = Query("title", description="Sort field"),
     sort_order: str = Query("asc", description="Sort order (asc/desc)"),
+    # Filter parameters
+    authors: Optional[List[str]] = Query(None, description="Filter by author names"),
+    organizations: Optional[List[str]] = Query(None, description="Filter by organizations"),
+    keywords: Optional[List[str]] = Query(None, description="Filter by keywords"),
+    date_from: Optional[str] = Query(None, description="Filter by publication date from (YYYY-MM-DD)"),
+    date_to: Optional[str] = Query(None, description="Filter by publication date to (YYYY-MM-DD)"),
+    formats: Optional[List[str]] = Query(None, description="Filter by metadata formats (xml, json, jsonld, rdf)"),
     db: Session = Depends(get_db)
 ):
     """
-    List all datasets with pagination.
+    List all datasets with pagination and optional filters.
     
     Returns paginated list of datasets with basic information.
+    Supports filtering by authors, organizations, keywords, publication date range, and metadata formats.
     """
     # Validate parameters
     _, page_size, offset = get_pagination_params(page, page_size)
@@ -51,11 +60,143 @@ def list_datasets(
     if sort_order not in ["asc", "desc"]:
         raise HTTPException(status_code=400, detail="Sort order must be 'asc' or 'desc'")
     
-    # Get total count
-    total = db.query(func.count(DatasetModel.id)).scalar()
-    
-    # Build query
+    # Build base query
     query = db.query(DatasetModel)
+    
+    # Apply author filter
+    if authors:
+        # Get dataset IDs that match any of the specified authors
+        author_conditions = []
+        for author in authors:
+            author_conditions.append(ContactModel.full_name.like(f"%{author}%"))
+            author_conditions.append(ContactModel.given_name.like(f"%{author}%"))
+            author_conditions.append(ContactModel.family_name.like(f"%{author}%"))
+        
+        contact_ids = db.query(ContactModel.dataset_id).filter(
+            or_(*author_conditions)
+        ).distinct().all()
+        author_dataset_ids = [c[0] for c in contact_ids]
+        
+        if author_dataset_ids:
+            query = query.filter(DatasetModel.id.in_(author_dataset_ids))
+        else:
+            # No matching authors found
+            return DatasetListResponse(
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0,
+                datasets=[]
+            )
+    
+    # Apply organization filter
+    if organizations:
+        # Get dataset IDs that match any of the specified organizations
+        org_conditions = []
+        for org in organizations:
+            org_conditions.append(ContactModel.organization_name.like(f"%{org}%"))
+        
+        org_ids = db.query(ContactModel.dataset_id).filter(
+            or_(*org_conditions)
+        ).distinct().all()
+        org_dataset_ids = [o[0] for o in org_ids]
+        
+        if org_dataset_ids:
+            query = query.filter(DatasetModel.id.in_(org_dataset_ids))
+        else:
+            # No matching organizations found
+            return DatasetListResponse(
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0,
+                datasets=[]
+            )
+    
+    # Apply keyword filter
+    if keywords:
+        # Get dataset IDs that have ALL of the specified keywords
+        keyword_dataset_ids = None
+        for keyword in keywords:
+            kw_ids = db.query(KeywordModel.dataset_id).filter(
+                KeywordModel.keyword == keyword
+            ).distinct().all()
+            kw_dataset_ids = set([k[0] for k in kw_ids])
+            
+            if keyword_dataset_ids is None:
+                keyword_dataset_ids = kw_dataset_ids
+            else:
+                # Intersection - dataset must have all keywords
+                keyword_dataset_ids &= kw_dataset_ids
+        
+        if keyword_dataset_ids:
+            query = query.filter(DatasetModel.id.in_(list(keyword_dataset_ids)))
+        else:
+            # No datasets with all specified keywords
+            return DatasetListResponse(
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0,
+                datasets=[]
+            )
+    
+    # Apply date range filter using shared utility function
+    if date_from:
+        try:
+            date_from_obj = parse_date_string(date_from)
+            query = query.filter(DatasetModel.publication_date >= date_from_obj)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date_from: {str(e)}"
+            )
+    
+    if date_to:
+        try:
+            date_to_obj = parse_date_string(date_to)
+            query = query.filter(DatasetModel.publication_date <= date_to_obj)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid date_to: {str(e)}"
+            )
+    
+    # Apply metadata format filter
+    if formats:
+        # Validate format values
+        valid_formats = ['xml', 'json', 'jsonld', 'rdf']
+        for fmt in formats:
+            if fmt.lower() not in valid_formats:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid format: {fmt}. Must be one of: {', '.join(valid_formats)}"
+                )
+        
+        # Get dataset IDs that have metadata in ANY of the specified formats
+        format_conditions = []
+        for fmt in formats:
+            format_conditions.append(MetadataDocumentModel.format == fmt.lower())
+        
+        format_ids = db.query(MetadataDocumentModel.dataset_id).filter(
+            or_(*format_conditions)
+        ).distinct().all()
+        format_dataset_ids = [f[0] for f in format_ids]
+        
+        if format_dataset_ids:
+            query = query.filter(DatasetModel.id.in_(format_dataset_ids))
+        else:
+            # No datasets with the specified formats
+            return DatasetListResponse(
+                total=0,
+                page=page,
+                page_size=page_size,
+                total_pages=0,
+                datasets=[]
+            )
+    
+    # Get total count after filters
+    total = query.count()
     
     # Apply sorting
     if hasattr(DatasetModel, sort_by):
@@ -72,7 +213,7 @@ def list_datasets(
     datasets = query.offset(offset).limit(page_size).all()
     
     # Calculate total pages
-    total_pages = (total + page_size - 1) // page_size
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
     
     return DatasetListResponse(
         total=total,
