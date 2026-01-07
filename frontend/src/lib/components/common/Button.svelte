@@ -6,6 +6,9 @@
 	export let loading = false;
 	export let fullWidth = false;
 
+	let className = '';
+	export { className as class };
+
 	const variants = {
 		primary: 'btn-primary',
 		secondary: 'btn-secondary',
@@ -23,7 +26,8 @@
 	{type}
 	{disabled}
 	on:click
-	class="btn {variants[variant]} {sizes[size]} {fullWidth ? 'w-full' : ''}"
+	class="btn {variants[variant]} {sizes[size]} {fullWidth ? 'w-full' : ''} {className}"
+	{...$$restProps}
 	class:opacity-50={loading}
 	class:cursor-wait={loading}
 >
