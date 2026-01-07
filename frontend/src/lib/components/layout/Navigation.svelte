@@ -7,6 +7,7 @@
 		{ label: 'Home', href: '/' },
 		{ label: 'Search', href: '/search' },
 		{ label: 'Browse', href: '/browse' },
+		{ label: 'Dashboard', href: '/dashboard' },
 		{ label: 'About', href: '/about' }
 	];
 	
