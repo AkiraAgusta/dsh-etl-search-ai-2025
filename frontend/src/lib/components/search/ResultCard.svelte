@@ -26,7 +26,8 @@
 		<div class="flex-1">
 			<div class="flex items-center gap-2 mb-1">
 				<span class="text-sm font-medium text-gray-500">#{rank}</span>
-				{#if result.similarity_score !== undefined}
+				<!-- Prevents showing "0% match" when filters are applied without a search query -->
+				{#if result.similarity_score !== undefined && result.similarity_score > 0}
 					<Badge size="sm" customClass={getScoreColor(result.similarity_score)}>
 						{formatScore(result.similarity_score)} match
 					</Badge>
