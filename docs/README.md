@@ -1,8 +1,9 @@
 # Documentation
 
-This folder will contain:
+This folder contains project documentation, organized into the following subdirectories:
 
-- AI assistant conversation logs
-- Architecture decisions
-- Design documentation
-- Development notes
+```
+docs/
+├── architecture/       # System architecture documentation
+└── ai-conversation/    # AI assistant conversation logs
+```
